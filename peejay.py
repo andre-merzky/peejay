@@ -6,141 +6,384 @@
 """
 
 import os
-import re
 import subprocess
 from   time import sleep
 
-class peejay:
-    """ me master class.  create an instance, and that is it - your PJ framework
+# simple helper call which, in a given dir, creates a given file with the given
+# content
+def echo (d, f, c) :
+    
+    tgt = str(d) + '/' + str(f)
+    cmd = 'echo ' + str(c) + ' > ' + tgt
+    print ' --> ' + cmd
+
+    run (cmd)
+    return tgt
+
+
+# simple helper call which is the inverse of the echo above
+def cat (d, f) :
+    tgt = str(d) + '/' + str(f)
+
+    c   = run ('cat ' + tgt).rstrip ()
+
+    print ' --> cat ' + tgt + ' -> ' + c
+
+    return c
+
+
+# simple helper call which creates a dir/subdir and does not care about errors
+def mkdir (d, s="") :
+    tgt = str(d) + '/' + str(s)
+    print ' --> mkdir ' + tgt
+
+    try    : subprocess.call (['sh', '-c', 'mkdir -p ' + tgt])
+    except Exception as e: print 'mkdir failed: ' + str(e) 
+
+    return tgt
+
+
+# simple helper call which movees a file
+def mv (d_1, f_1, d_2, f_2 = '') :
+    src = str(d_1) + '/' + str(f_1)
+    tgt = str(d_2) + '/' + str(f_2)
+    print ' --> mv ' + src + ' ' + tgt
+
+    try    : subprocess.call (['sh', '-c', 'mv ' + src + ' ' + tgt])
+    except Exception as e: print 'mv failed: ' + str(e) 
+
+
+# simple helper call which deletes a file
+def rm (d, f) :
+    tgt = str(d) + '/' + str(f)
+    print ' --> rm ' + tgt
+
+    try    : subprocess.call (['sh', '-c', 'rm -f ' + tgt])
+    except Exception as e: print 'rm failed: ' + str(e) 
+
+
+# simple helper call which runs a shell command
+def run (cmd) :
+    c = ''
+    print ' --> run ' + cmd
+
+    try    : c = subprocess.Popen(['sh', '-c', cmd], stdout=subprocess.PIPE).communicate()[0]
+    except Exception as e: print 'run failed: ' + str(e) 
+
+    return c
+
+
+# simple helper call which changes file modes
+def chmod (d, f, m) :
+    tgt = str(d) + '/' + str(f)
+    print ' --> chmod ' + m + ' ' + tgt
+
+    try    : subprocess.call (['sh', '-c', 'chmod ' + m + ' ' + tgt])
+    except Exception as e: print 'chmod failed: ' + str(e) 
+
+
+# simple helper call which lists some files in some dir
+def ls (d, f) :
+    tgt = str(d) + '/' + str(f)
+    print ' --> ls ' + tgt
+    files = ()
+
+    try    : files = subprocess.Popen(['sh', '-c', 'ls ' + tgt], stdout=subprocess.PIPE).communicate()[0]
+    except Exception as e: print 'ls failed: ' + str(e) 
+
+    return files.splitlines ()
+
+
+
+class state ():
+    Unknown  = 'Unknown'
+    New      = 'New'
+    Pending  = 'Pending'
+    Running  = 'Running'
+    Done     = 'Done'
+    Canceled = 'Canceled'
+    Failed   = 'Failed'
+
+    @staticmethod
+    def str2state (s) :
+
+        if s == 'New'      : return state.New     
+        if s == 'Pending'  : return state.Pending 
+        if s == 'Running'  : return state.Running 
+        if s == 'Done'     : return state.Done    
+        if s == 'Canceled' : return state.Canceled
+        if s == 'Failed'   : return state.Failed  
+        return state.Unknown
+
+
+class master:
+    """ me master class.  Create an instance, and that is it - your PJ framework
         is ready.
-
-        If created in application, it will run master(), and spawn one pilot
-        job.  That pilot job is a python agent, run like that
-
-          /bin/env PEEJAY_ID=1 PEEJAY_BASE=/tmp/peejay/ python -c "import peejay; pj=new peejay()"
-
-        which will also just instantiate a peejay instance - that will run
-        serve(), and will pickup work in /tmp/peejay/1.
     """
 
+    # these are class attributes, but thus valid per application instance, not
+    # per class instance (go figure...)
+    base      = '/tmp/peejay/' # base spool dir
+    pilot_num = 0              # consecutive id for pilots, with obvious
+                               # overrun problem
+
     def __init__ (self) :
-        self.id     = "0"            # master = 0, pilots > 0
-        self.pilots = []             # list of pilot pid's
-        self.jobs   = []             # list of jobs within the pilots
-        self.base   = "/tmp/peejay/" # base spool dir
+        pass
 
-        self.init ()
+    def pilot_base (self, pilot_id) :
+        return self.base + '/' + str(pilot_id)
 
 
-    def init (self, pilot_id = "0") :
+    def run_pilot (self) :
+        # now, this routine is not thread safe -- if called concurrently, the
+        # pilots will certainly confuse their IDs, and will screw up the spool
+        # dir management which relies on unique IDs.  So, don't.
+        self.pilot_num += 1
+        pilot_id = str(self.pilot_num)
 
-        self.id = str (pilot_id)
-        print "peejay: id  " + self.id
+        print 'peejay master spawns pilot ' + pilot_id
 
+        
+        # prepare pilot base
+        pilot_base = self.pilot_base (pilot_id)
 
-        if self.id == "0" :
-            self.master = True
-        else :
-            self.master = False
+        mkdir (pilot_base)
+        echo  (pilot_base, 'state', state.New)
 
-
-        if self.master :
-            print "peejay master spawns pilot"
-            self.pilots.append (self.create_pilot ())
-
-        else :
-            self.base = "/tmp/peejay/" + self.id
-
-            try    : os.mkdir (self.base)
-            except : pass
-
-            print " peejay: base: " + self.base
-
-
-
-
-    def create_pilot (self) :
-
-        # only master can create pilots
-        if not self.master :
-            print "peejay agent running wild!  shut Down  EVERYTHING!!!"
-            exit (-1)
-
-        # fork returns with 0 for the spawned process
+        # create the pilot, and init it
         pilot_pid = os.fork ()
 
-        if not pilot_pid :
+        if pilot_pid :
+            # keep the pilot pid around
+            echo (pilot_base, 'pid', pilot_pid)
+
+            # tell callee about spawned pilot
+            return pilot (pilot_id)
+
+        else :
             # this is the pilot.  Initialize, serve, and die.  Tough life, ey?
-            pilot_id = len (self.pilots) + 1
-            self.init  (pilot_id)
-            self.serve ( )
-            exit  (0)
+            p = pilot (pilot_id)
+            p.serve ( )
 
-        # tell master about spawned pilot
-        return pilot_pid
+            # the fork finishes here...
+            exit (0)
+
+    def kill_pilot (self, pilot) :
+
+        pilot.kill ()
 
 
 
+class pilot:
+
+    def __init__ (self, pilot_id) :
+
+        # we use the following dir structure to manage jobs and state:
+        #
+        # /tmp/peejay/<pilot_id>/spool    - jobs are dropped here as shell scripts
+        # /tmp/peejay/<pilot_id>/active   - jobs are moved here once running
+        # /tmp/peejay/<pilot_id>/finished - jobs are moved here once final
+        #
+        # So, a job lifecycle is rendered as:
+        #
+        #   # cat >  /tmp/peejay/1/spool/job_1.sh
+        #     /bin/date
+        #
+        #   That job is wrapped into a shell script, which is:
+        #
+        #     mv /tmp/peejay/1/spool/job_1.run /tmp/peejay/1/active/job_1.run
+        #     sh -c      /tmp/peejay/1/active/job_1.sh.run \
+        #       1 >      /tmp/peejay/1/active/job_1.sh.out \
+        #       2 >      /tmp/peejay/1/active/job_1.sh.out \
+        #       && touch /tmp/peejay/1/active/job_1.sh.ok  \
+        #       || touch /tmp/peejay/1/active/job_1.sh.nok
+        #     mv /tmp/peejay/1/active/job_1.* /tmp/peejay/1/finished/
+        #
+        #   We need to make sure of course that the jobs are named uniquely in
+        #   the initial spool - and, what else, use a serial integer ID for
+        #   that...
+
+        self.pilot_id = str(pilot_id)
+        self.base     = mkdir (master.base, pilot_id)
+        self.spool    = mkdir (self.base, 'spool')
+        self.active   = mkdir (self.base, 'active')
+        self.done     = mkdir (self.base, 'done')
+        self.jobnum   = 0
+
+
+    def job_submit (self, command) :
+        self.jobnum += 1
+        job_id = self.jobnum
+
+        name = 'job.' + str(job_id)
+        echo (self.spool, name, command)
+
+        return job (self, job_id)
+
+
+    def job_get_state (self, job_id) :
+        base = 'job.' + str(job_id)
+        files = ls (self.base + '/*/', base + '*')
+
+        for f in files :
+            elems = f.split ('/')
+            n = elems.pop ()
+            d = elems.pop ()
+
+            while d == "" :
+                d = elems.pop ()
+
+            if d == 'spool'  : return state.New
+            if d == 'active' : return state.Running
+            if d == 'done'   : 
+                if n == base + '.ok'  : return state.Done
+                if n == base + '.nok' : return state.Failed
+
+        return state.Unknown
+
+
+    def is_active (self) :
+        if not self.get_state () == state.Running :
+            raise Exception ('pilot is not in Running state')
+
+
+    def kill (self) :
+        if self.get_state () == state.Running :
+            echo (self.spool, 'COMMAND', 'QUIT')
+
+
+    def set_state (self, state) :
+        echo (self.base, 'state', state)
+
+
+    def get_state (self) :
+        return state.str2state (cat (self.base, 'state'))
 
 
     def serve (self) :
-
-        print "serving: " + self.id
+        print 'serving: ' + self.pilot_id
+        self.set_state (state.Running)
 
         while 1 :
-            # get all items in dir
-            list = os.listdir (self.base)
+            # get all items in spool dir
+            list = os.listdir (self.spool)
 
-
-            # any order assumed
             if not len (list) :
-
-                print "peejay pilot " + self.id + ": nothing to do"
+                print 'peejay pilot ' + self.pilot_id + ': nothing to do'
+                sleep (1)
 
             else :
-
                 for item in list :
+                    if item == 'COMMAND' :
 
-                    name_parts = re.split ("\.", item)
+                        # yes master, got it
+                        command = cat (self.spool, item)
+                        rm (self.spool, item)
 
-                    # *,run: job to run
-                    # *.cmd: command to interpret
-                    action = name_parts [-1]
-                    print "action: " + action
+                        if command == 'QUIT' :
+                           self.set_state ( state.Canceled)
+                           exit (0)
+                        else :
+                            print 'do not know how to handle command ' + command
+                            print 'ignored :-P'
 
-                    if action == "quit" :
-                        print "peejay pilot was told to quit. Well then... - bye"
-                        os.remove (self.base + "/" + item)
-                        return
+                    else : # item != COMMAND
 
-                    if action == "run" :
+                      print 'serving ' + item + ' (' + str (os.getpid()) + ')'
 
-                        job_pid = os.fork ()
+                      # well, lts run that bugger in a separate process!
+                      job_pid = os.fork ()
 
-                        if not job_pid :
-                            script        = self.base     + "/" + item
-                            script_active = script        + '.' + str (os.getpid ())
-                            script_done   = script_active + '.done'
+                      if job_pid :
+                          # this main fork does nothing, and continues to loop through
+                          # the list of items
+                          
+                          # 'does nothing' : the sleep is actually needed to let
+                          # the forked process move the script away from spool
+                          sleep (1)
+                          pass
 
-                            print "pilot " + self.id + ": running : " + script
+                      else :
+                          # here we are in the forked process, now fully dedicated
+                          # to pamper (i.e. to wrap) the job
+                          pid = str(os.getpid ())
 
-                            os.rename (script,                 script_active)
-                            subprocess.call (['/bin/sh', '-e', script_active])
-                            os.rename (script_active,          script_done)
+                          script      = item
+                          script_run  = item + '.run'
+                          script_out  = item + '.out'
+                          script_err  = item + '.err'
+                          script_ok   = item + '.ok' 
+                          script_nok  = item + '.nok'
+                          script_all  = item + '*'
 
-                            print "pilot " + self.id + ": done    : " + script
-                            exit (0)
+                          print 'pilot ' + self.pilot_id + ' : running : ' + item
 
-            sleep (1)
+                          command =                self.active + '/' + script_run \
+                                  + ' 1> '       + self.done   + '/' + script_out \
+                                  + ' 2> '       + self.done   + '/' + script_err \
+                                  + ' && touch ' + self.done   + '/' + script_ok  \
+                                  + ' || touch ' + self.done   + '/' + script_nok 
+
+                          mv    (self.spool, script,      self.active, script_run)
+                          chmod (self.active, script_run, '0755')
+                          run   (command)
+                          mv    (self.active, script_all, self.done)
+
+                          print 'pilot ' + self.pilot_id + ': done    : ' + item
+
+                          # job is done, files are staged out, bye bye
+                          exit (0)
 
 
 
+class job:
+
+    def __init__ (self, pilot, job_id) :
+
+        self.pilot    = pilot
+        self.job_id   = job_id
+        self.canceled = False
 
 
-pj = peejay ()
+    def kill (self) :
+        pilot.job_kill (self.job_id)
+        self.canceled = True
 
 
+    def get_state (self) :
+        if self.canceled : return state.Canceled
+        return self.pilot.job_get_state (self.job_id)
+        
 
+
+def main () :
+
+    pm = master ()
+    pj = pm.run_pilot ()
+
+    print 'pj: ' + str(pj.get_state ())
+    
+    sleep (2)
+
+    j = pj.job_submit ('touch /tmp/pj.test')
+
+    print 'pj: ' + str(pj.get_state ())
+    print ' j: ' + str( j.get_state ())
+
+    sleep (2)
+    
+    print 'pj: ' + str(pj.get_state ())
+    print ' j: ' + str( j.get_state ())
+    
+    pm.kill_pilot (pj)
+    
+    sleep (2)
+    
+    print 'pj: ' + str(pj.get_state ())
+
+
+if __name__ == '__main__':
+    main()
 
 
 # vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4
