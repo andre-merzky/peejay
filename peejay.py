@@ -5,6 +5,7 @@
     from playing with the PJ paradigm, that is...
 """
 
+import re
 import os
 import subprocess
 from   time import sleep
@@ -14,7 +15,7 @@ from   time import sleep
 def echo (d, f, c) :
     
     tgt = str(d) + '/' + str(f)
-    cmd = 'echo ' + str(c) + ' > ' + tgt
+    cmd = 'echo "' + str(c) + '" > ' + tgt
     print ' --> ' + cmd
 
     run (cmd)
@@ -93,6 +94,26 @@ def ls (d, f) :
 
     return files.splitlines ()
 
+# create pilot id from master_id and pilot_id
+def create_id (master_id, pilot_id) :
+
+    return '[' + str(master_id) + ']-[' + str(pilot_id) + ']'
+
+
+
+# parse id into '[master_id]-[pilot_id]'
+def parse_id (id) :
+
+    match = re.match (r'^\[(\d+)\]-\[(\d)\]$', str(id))
+
+    if match is None :
+        return [None, None]
+
+    master_id  = match.groups()[0]
+    pilot_id   = match.groups()[1]
+
+    return [master_id, pilot_id]
+
 
 
 class state ():
@@ -123,12 +144,32 @@ class master:
 
     # these are class attributes, but thus valid per application instance, not
     # per class instance (go figure...)
-    base      = '/tmp/peejay/' # base spool dir
-    pilot_num = 0              # consecutive id for pilots, with obvious
-                               # overrun problem
+    root  = '/tmp/peejay' # all master pilots live beneath
+    index = 0             # consecutive id for masters, with obvious
+                          # overrun problem.  FIXME: needs to be larger than any
+                          # re-connectible master
 
-    def __init__ (self) :
-        pass
+    def __init__ (self, id = None) :
+
+        master.index      += 1
+
+        if id == None :
+            self.id = str(master.index)
+        else :
+            self.id = str(id)
+
+
+        self.base          = str(master.root) + '/' +  self.id
+        self.pilot_index   = 0
+        self.pilots        = []
+
+
+
+    def get_base (self) :
+        return self.base
+
+    def get_id (self) :
+        return self.id
 
     def pilot_base (self, pilot_id) :
         return self.base + '/' + str(pilot_id)
@@ -138,14 +179,14 @@ class master:
         # now, this routine is not thread safe -- if called concurrently, the
         # pilots will certainly confuse their IDs, and will screw up the spool
         # dir management which relies on unique IDs.  So, don't.
-        self.pilot_num += 1
-        pilot_id = str(self.pilot_num)
+        self.pilot_index += 1
+        pilot_id = create_id (self.id, str(self.pilot_index))
 
         print 'peejay master spawns pilot ' + pilot_id
 
         
         # prepare pilot base
-        pilot_base = self.pilot_base (pilot_id)
+        pilot_base = self.pilot_base (str(self.pilot_index))
 
         mkdir (pilot_base)
         echo  (pilot_base, 'state', state.New)
@@ -154,8 +195,9 @@ class master:
         pilot_pid = os.fork ()
 
         if pilot_pid :
-            # keep the pilot pid around
+            # keep the pilot id and pid around
             echo (pilot_base, 'pid', pilot_pid)
+            self.pilots.append (pilot_id)
 
             # tell callee about spawned pilot
             return pilot (pilot_id)
@@ -168,15 +210,32 @@ class master:
             # the fork finishes here...
             exit (0)
 
+
+
+    def list_pilots (self) :
+
+        return self.pilots
+
+
+    def get_pilot (self, pilot_id) :
+
+        return pilot (pilot_id)
+
+
+
     def kill_pilot (self, pilot) :
 
+        if not self.pilots.count (pilot.get_id ()) :
+            raise Exception ("No such pilot registered")
+
+        self.pilots.remove (pilot.get_id ())
         pilot.kill ()
 
 
 
 class pilot:
 
-    def __init__ (self, pilot_id) :
+    def __init__ (self, id) :
 
         # we use the following dir structure to manage jobs and state:
         #
@@ -203,17 +262,25 @@ class pilot:
         #   the initial spool - and, what else, use a serial integer ID for
         #   that...
 
-        self.pilot_id = str(pilot_id)
-        self.base     = mkdir (master.base, pilot_id)
-        self.spool    = mkdir (self.base, 'spool')
-        self.active   = mkdir (self.base, 'active')
-        self.done     = mkdir (self.base, 'done')
-        self.jobnum   = 0
+        self.id           = id
+
+        [self.master_id, self.pilot_id] = parse_id (self.id)
+
+        self.master_base  = mkdir (master.root,      self.master_id)
+        self.base         = mkdir (self.master_base, self.pilot_id)
+        self.spool        = mkdir (self.base, 'spool')
+        self.active       = mkdir (self.base, 'active')
+        self.done         = mkdir (self.base, 'done')
+        self.job_index    = 0
+
+    
+    def get_id (self) :
+        return self.id
 
 
     def job_submit (self, command) :
-        self.jobnum += 1
-        job_id = self.jobnum
+        self.job_index += 1
+        job_id = self.job_index
 
         name = 'job.' + str(job_id)
         echo (self.spool, name, command)
@@ -261,7 +328,7 @@ class pilot:
 
 
     def serve (self) :
-        print 'serving: ' + self.pilot_id
+        print 'serving: ' + self.id
         self.set_state (state.Running)
 
         while 1 :
@@ -269,7 +336,7 @@ class pilot:
             list = os.listdir (self.spool)
 
             if not len (list) :
-                print 'peejay pilot ' + self.pilot_id + ': nothing to do'
+                # print 'peejay pilot ' + self.id + ': nothing to do'
                 sleep (1)
 
             else :
@@ -316,7 +383,7 @@ class pilot:
                           script_nok  = item + '.nok'
                           script_all  = item + '*'
 
-                          print 'pilot ' + self.pilot_id + ' : running : ' + item
+                          print 'pilot ' + self.id + ' : running : ' + item
 
                           command =                self.active + '/' + script_run \
                                   + ' 1> '       + self.done   + '/' + script_out \
@@ -329,7 +396,7 @@ class pilot:
                           run   (command)
                           mv    (self.active, script_all, self.done)
 
-                          print 'pilot ' + self.pilot_id + ': done    : ' + item
+                          print 'pilot ' + self.id + ': done    : ' + item
 
                           # job is done, files are staged out, bye bye
                           exit (0)
@@ -355,35 +422,52 @@ class job:
         return self.pilot.job_get_state (self.job_id)
         
 
-
-def main () :
-
-    pm = master ()
-    pj = pm.run_pilot ()
-
-    print 'pj: ' + str(pj.get_state ())
-    
-    sleep (2)
-
-    j = pj.job_submit ('touch /tmp/pj.test')
-
-    print 'pj: ' + str(pj.get_state ())
-    print ' j: ' + str( j.get_state ())
-
-    sleep (2)
-    
-    print 'pj: ' + str(pj.get_state ())
-    print ' j: ' + str( j.get_state ())
-    
-    pm.kill_pilot (pj)
-    
-    sleep (2)
-    
-    print 'pj: ' + str(pj.get_state ())
+    def get_id (self) :
+        return self.job_id
 
 
-if __name__ == '__main__':
-    main()
+    def wait (self) :
+
+        s = self.get_state () 
+        while s != state.Done     and \
+              s != state.Failed   and \
+              s != state.Canceled : 
+
+            sleep (1)
+            print " --> wait for job " + str(self.job_id)
+            s = self.get_state () 
+
+
+
+# def main () :
+# 
+#     pm = master ()
+#     pj = pm.run_pilot ()
+# 
+#     print 'pj: ' + str(pj.get_state ())
+#     
+#     sleep (2)
+# 
+#     j = pj.job_submit ('touch /tmp/pj.test')
+# 
+#     print 'pj: ' + str(pj.get_state ())
+#     print ' j: ' + str( j.get_state ())
+# 
+#     sleep (2)
+#     
+#     print 'pj: ' + str(pj.get_state ())
+#     print ' j: ' + str( j.get_state ())
+#     
+#     pm.kill_pilot (pj)
+#     
+#     sleep (2)
+#     
+#     print 'pj: ' + str(pj.get_state ())
+
+
+# if __name__ == '__main__':
+#     main()
+#     main()
 
 
 # vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4
