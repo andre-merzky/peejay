@@ -154,15 +154,22 @@ class master:
         master.index      += 1
 
         if id == None :
-            self.id = str(master.index)
+            self.id        = str(master.index)
+            self.reconnect = False
         else :
-            self.id = str(id)
+            self.id        = str(id)
+            self.reconnect = True
 
 
         self.base          = str(master.root) + '/' +  self.id
         self.pilot_index   = 0
         self.pilots        = []
 
+        # gather infos about existing pilots
+        if self.reconnect :
+            pilot_nums = ls (self.base, '')
+            for n in pilot_nums :
+                self.pilots.append (create_id (self.id, n))
 
 
     def get_base (self) :
@@ -213,7 +220,6 @@ class master:
 
 
     def list_pilots (self) :
-
         return self.pilots
 
 
