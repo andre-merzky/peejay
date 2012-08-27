@@ -14,6 +14,7 @@ import traceback
 from   time import sleep
 
 
+################################################################################
 # simple helper call which runs a shell command
 def run (cmd) :
     r    = 0
@@ -36,16 +37,27 @@ def run (cmd) :
 
 
     if fail :
-        print str(os.getpid()) + ' ----------------- run failed'
-        print str(os.getpid()) + " cmd : " + str(cmd)
-        print str(os.getpid()) + " out : " + str(out)
-        print str(os.getpid()) + " err : " + str(err)
-        print str(os.getpid()) + " r   : " + str(r)
-        print str(os.getpid()) + ' ----------------- '
+        print "peejay " + str(os.getpid()) + ' ----------------- run failed'
+        print "peejay " + str(os.getpid()) + " cmd : " + str(cmd)
+        print "peejay " + str(os.getpid()) + " out : " + str(out)
+        print "peejay " + str(os.getpid()) + " err : " + str(err)
+        print "peejay " + str(os.getpid()) + " r   : " + str(r)
+        print "peejay " + str(os.getpid()) + ' ----------------- '
         # exit (-1)
 
     return out
 
+
+
+# " -> \"
+def quote (s) :
+    
+    ret = ""
+    for c in str(s) :
+        if c == '"' :
+            ret += '\\'
+        ret += c
+    return ret
 
 
 # simple helper call which, in a given dir, creates a given file with the given
@@ -53,7 +65,7 @@ def run (cmd) :
 def echo (d, f, c) :
     
     tgt = str(d) + '/' + str(f)
-    cmd = 'echo "' + str(c) + '" > ' + tgt
+    cmd = 'echo "' + quote(c) + '" > ' + tgt
 
     run (cmd)
     return tgt
@@ -110,32 +122,54 @@ def chmod (d, f, m) :
 def ls (d, f="") :
     tgt = str(d) + '/' + str(f)
 
-    out =  run ('ls ' + tgt)
-    return out.splitlines ()
+    out   =  run ('ls ' + tgt)
+
+    lines = out.splitlines ()
+
+    # remove trailing '/'
+    for line in lines :
+        line.rstrip ('/')
+
+    return lines
 
 
-# create pilot id from master_id and pilot_id
-def create_id (master_id, pilot_id) :
+###################################################################
+#
+# create and parse IDs
+#
+def create_master_id (master_idx) :
+    return '[' +  str(master_idx) + ']'
 
-    return '[' + str(master_id) + ']-[' + str(pilot_id) + ']'
+
+def create_pilot_id (master_idx, pilot_idx) :
+    return '[' + str(master_idx) + ']-[' + str(pilot_idx) + ']'
 
 
-
-# parse id into '[master_id]-[pilot_id]'
-def parse_id (id) :
-
-    match = re.match (r'^/?\[(\d+)\]-\[(\d)\]$', str(id))
-
-    if match is None :
-        return [None, None]
-
-    master_id  = match.groups()[0]
-    pilot_id   = match.groups()[1]
-
-    return [master_id, pilot_id]
+def create_job_id   (master_idx, pilot_idx, job_idx) :
+    return '[' + str(master_idx) + ']-[' + str(pilot_idx) + ']-[' + str(job_idx) + ']'
 
 
 
+def parse_master_id (master_id) :
+    match = re.match (r'^\[(\d+)\]$', master_id)
+    if match is None : return None
+    return match.groups()[0]
+
+
+def parse_pilot_id (pilot_id) :
+    match = re.match (r'^\[(\d+)\]-\[(\d+)\]$', pilot_id)
+    if match is None : return [None, None]
+    return [match.groups()[0], match.groups()[1]]
+
+
+def parse_job_id (job_id) :
+    match = re.match (r'^\[(\d+)\]-\[(\d+)\]-\[(\d+)\]$', job_id)
+    if match is None : return [None, None, None]
+    return [match.groups()[0], match.groups()[1], match.groups()[2]]
+
+
+
+################################################################################
 class state ():
     Unknown  = 'Unknown'
     New      = 'New'
@@ -157,6 +191,7 @@ class state ():
         return state.Unknown
 
 
+################################################################################
 class master:
     """ me master class.  Create an instance, and that is it - your PJ framework
         is ready.
@@ -164,56 +199,55 @@ class master:
 
     # these are class attributes, but thus valid per application instance, not
     # per class instance (go figure...)
-    root  = '/tmp/peejay' # all master pilots live beneath
-    index = 0             # consecutive id for masters, with obvious
-                          # overrun problem.  FIXME: needs to be larger than any
-                          # re-connectible master
+    root       = '/tmp/peejay' # all master pilots live beneath
+    master_idx = 1             # consecutive id for masters, with obvious
+                               # overrun problem.  FIXME: needs to be larger than any
+                               # re-connectible master
 
-    def __init__ (self, id = None) :
+    def __init__ (self, master_id = None) :
 
-        master.index      += 1
-
-        self.i = 0
-
-        if id == None :
-            self.id        = str(master.index)
-            self.reconnect = False
+        if master_id == None :
+            self.reconnect     = False
+            self.master_idx    = master.master_idx
+            self.master_id     = create_master_id (self.master_idx)
+            master.master_idx += 1
         else :
-            self.id        = str(id)
-            self.reconnect = True
+            self.reconnect  = True
+            self.master_idx = parse_master_id (master_id)
+            self.master_id  = str(master_id)
 
 
-        self.base          = str(master.root) + '/' +  self.id
-        self.pilot_index   = 0
-        self.pilots        = []
+        self.base        = master.root + '/' +  str(self.master_idx)
+        self.pilot_idx   = 0
+        self.pilots      = []
 
         # gather infos about existing pilots
         if self.reconnect :
             pilot_nums = ls (self.base, '')
             for n in pilot_nums :
-                self.pilots.append (create_id (self.id, n))
+                self.pilots.append (create_pilot_id (self.master_idx, n))
 
 
     def get_base (self) :
         return self.base
 
     def get_id (self) :
-        return self.id
+        return self.master_id
 
-    def pilot_base (self, pilot_id) :
-        return self.base + '/' + str(pilot_id)
+    def pilot_base (self, pilot_idx) :
+        return self.base + '/' + str(pilot_idx)
 
 
     def run_pilot (self) :
         # now, this routine is not thread safe -- if called concurrently, the
         # pilots will certainly confuse their IDs, and will screw up the spool
         # dir management which relies on unique IDs.  So, don't.
-        self.pilot_index += 1
-        pilot_id = create_id (self.id, str(self.pilot_index))
+        self.pilot_idx += 1
+        pilot_id = create_pilot_id (self.master_idx, self.pilot_idx)
 
         
         # prepare pilot base
-        pilot_base = self.pilot_base (str(self.pilot_index))
+        pilot_base = self.pilot_base (self.pilot_idx)
 
         mkdir (pilot_base)
         echo  (pilot_base, 'state', state.New)
@@ -224,7 +258,7 @@ class master:
         pilot_pid = os.fork ()
 
         if pilot_pid :
-            print str(os.getpid()) + " started pilot " + str(pilot_pid)
+            print "peejay " + str(os.getpid()) + " started p/home/merzky/pictures/import/2012-08-27/DCIMilot " + str(pilot_pid)
 
             # keep the pilot id and pid around
             echo (pilot_base, 'pid', pilot_pid)
@@ -235,9 +269,9 @@ class master:
 
         else :
 
-            self.i += 1
+            self.pilot_idx += 1
             # this is the pilot.  It got initialized - now serve and die.  Tough life, ey?
-            print str(os.getpid()) + " pilot started -- " + str(pilot_id) + " - " + str(self.i)
+            print "peejay " + str(os.getpid()) + " pilot started -- " + str(pilot_id) + " - " + str(self.master_idx)
             p = pilot (pilot_id)
             p.serve ( )
 
@@ -250,8 +284,16 @@ class master:
         return self.pilots
 
 
-    def get_pilot (self, pilot_id) :
+    def list_jobs (self) :
 
+        ret = []
+        for p_id in self.list_pilots () :
+            p = self.get_pilot (p_id)
+            ret += p.list_jobs ()
+        return ret
+
+
+    def get_pilot (self, pilot_id) :
         return pilot (pilot_id)
 
 
@@ -261,14 +303,16 @@ class master:
         if not self.pilots.count (pilot.get_id ()) :
             raise Exception ("No such pilot registered")
 
+        print "peejay " + str(os.getpid()) + " killing pilot " + str(pilot.get_id ())
         self.pilots.remove (pilot.get_id ())
         pilot.kill ()
 
 
 
+################################################################################
 class pilot:
 
-    def __init__ (self, id, init=False) :
+    def __init__ (self, pilot_id, init=False) :
 
         # we use the following dir structure to manage jobs and state:
         #
@@ -295,59 +339,83 @@ class pilot:
         #   the initial spool - and, what else, use a serial integer ID for
         #   that...
 
-        self.id = id
+        self.pilot_id = pilot_id
 
-        [self.master_id, self.pilot_id] = parse_id (self.id)
+        print "peejay pilot: " + str(pilot_id)
 
-        self.master_base  = master.root      + '/' + self.master_id
-        self.base         = self.master_base + '/' + self.pilot_id
+        [self.master_idx, self.pilot_idx] = parse_pilot_id (self.pilot_id)
+
+        self.master_base  = master.root      + '/' + self.master_idx
+        self.base         = self.master_base + '/' + self.pilot_idx
         self.active       = self.base        + '/' + 'active'
         self.done         = self.base        + '/' + 'done'
         self.spool        = self.base        + '/' + 'spool'
-        self.idx          = self.base        + '/' + 'idx'
+        self.job_idx      = self.base        + '/' + 'job_idx'
+
+        self.description  = { 'type' : 'Compute' }
+        self.jobs = []
 
         if init :
             # we need to initialize working space once
-            if not os.path.exists (self.idx) :
+            if not os.path.exists (self.job_idx) :
 
                 # initialize pilot state and job id index
                 mkdir (self.base, 'active')
                 mkdir (self.base, 'done')
                 mkdir (self.base, 'spool')
 
-                echo (self.base, 'idx', 0)
+                echo  (self.base, 'job_idx', 0)
 
     
-    def generate_id (self) :
-        idx  = int (cat (self.base, 'idx'))
-        idx += 1
-        echo (self.base, 'idx', idx)
-
-        return idx
+    def get_job_idx (self) :
+        job_idx  = int (cat (self.base, 'job_idx'))
+        job_idx += 1
+        echo (self.base, 'job_idx', job_idx)
+        return job_idx
 
     def get_id (self) :
-        return self.id
+        return self.pilot_id
 
+
+    def get_description (self) :
+        return self.description
+
+
+    def get_master_id (self) :
+        return create_master_id (self.master_idx)
+
+    def get_base (self) :
+        return self.base
 
     def job_submit (self, command) :
-
         # generate a new job id
-        job_id = self.generate_id ()
+        job_idx = self.get_job_idx ()
+        job_id  = create_job_id (self.master_idx, self.pilot_idx, job_idx)
 
-        name = 'job.' + str(job_id)
-        echo (self.spool, name, command)
+        echo (self.spool, job_idx, command)
 
-        return job (self, job_id)
+        ret = job (job_id)
+
+        self.jobs.append (job_id)
+
+        return ret
+
+
+    def list_jobs (self) :
+        return self.jobs
 
 
     def job_get_state (self, job_id) :
 
-        base = 'job.' + str(job_id)
+        [master_idx, pilot_idx, job_idx] = parse_job_id (job_id)
 
-        if os.path.exists (self.spool  + '/' + base          ) : return state.Pending
-        if os.path.exists (self.active + '/' + base          ) : return state.Running
-        if os.path.exists (self.done   + '/' + base + '.ok'  ) : return state.Done
-        if os.path.exists (self.done   + '/' + base + '.nok' ) : return state.Failed
+        if master_idx != self.master_idx : return state.Unknown 
+        if pilot_idx  != self.pilot_idx  : return state.Unknown
+
+        if os.path.exists (self.spool  + '/' + job_idx          ) : return state.Pending
+        if os.path.exists (self.active + '/' + job_idx          ) : return state.Running
+        if os.path.exists (self.done   + '/' + job_idx + '.ok'  ) : return state.Done
+        if os.path.exists (self.done   + '/' + job_idx + '.nok' ) : return state.Failed
 
         return state.Unknown
 
@@ -356,10 +424,23 @@ class pilot:
         if not self.get_state () == state.Running :
             raise Exception ('pilot is not in Running state')
 
+    def wait (self) :
+        s = self.get_state () 
+        while s != state.Done     and \
+              s != state.Failed   and \
+              s != state.Canceled : 
+
+            print "peejay " + str(os.getpid()) + " wait for pilot " + str(self.get_id ()) + " : " +  str(s)
+            sleep (1)
+            s = self.get_state () 
+
 
     def kill (self) :
         if self.get_state () == state.Running :
             echo (self.spool, 'COMMAND', 'QUIT')
+        # wait for final state
+        # FIXME: avoid deadlock on error
+        self.wait ()
 
 
     def set_state (self, state) :
@@ -371,7 +452,7 @@ class pilot:
 
 
     def serve (self) :
-        print str(os.getpid()) + ' serving: ' + self.id
+        print "peejay " + str(os.getpid()) + ' serving: ' + self.pilot_id
         self.set_state (state.Pending)
 
         # we wait until the spool directory appears - from that point on, we
@@ -385,15 +466,18 @@ class pilot:
 
         while 1 :
             # get all items in spool dir
-            list = ls (self.spool)
+            # print "peejay " + str(os.getpid()) + ' peejay pilot ' + self.pilot_id + ': watching ' + self.spool
+            items = ls (self.spool)
 
-            if not len (list) :
-                # print str(os.getpid()) + ' peejay pilot ' + self.id + ': nothing to do'
+            if not items or not len (items) :
+                # print "peejay " + str(os.getpid()) + ' peejay pilot ' + self.pilot_id + ': nothing to do'
                 sleep (1)
 
             else :
 
-                for item in list :
+                for item in items :
+                
+                    # print "peejay " + str(os.getpid()) + ' peejay pilot handles ' + item 
 
                     if item == 'COMMAND' :
 
@@ -405,8 +489,8 @@ class pilot:
                            self.set_state ( state.Canceled)
                            exit (0)
                         else :
-                            print str(os.getpid()) + ' do not know how to handle command ' + command
-                            print str(os.getpid()) + ' ignored :-P'
+                            print "peejay " + str(os.getpid()) + ' do not know how to handle command ' + command
+                            print "peejay " + str(os.getpid()) + ' ignored :-P'
 
                     else : # item != COMMAND
 
@@ -433,13 +517,13 @@ class pilot:
                           
                           # 'does nothing' : the sleep is actually needed to let
                           # the forked process move the script away from spool
-                          print str(os.getpid()) + " started job " + item + " : " + str(job_pid)
+                          print "peejay " + str(os.getpid()) + " started job " + item + " : " + str(job_pid)
 
                       else :
                           # here we are in the forked process, now fully dedicated
                           # to pamper (i.e. to wrap) the job
-                          print str(os.getpid()) + ' pilot ' + self.id + ' : running : ' + item
-                          print str(os.getpid()) + " job starting "
+                          print "peejay " + str(os.getpid()) + ' pilot ' + self.pilot_id + ' : running : ' + item
+                          print "peejay " + str(os.getpid()) + " job starting "
 
                           command =                self.active + '/' + script_run \
                                   + ' 1> '       + self.done   + '/' + script_out \
@@ -452,20 +536,37 @@ class pilot:
                           mv (self.active, item      , self.done)
                           mv (self.active, script_all, self.done)
 
-                          print str(os.getpid()) + ' pilot ' + self.id + ': done    : ' + item 
+                          print "peejay " + str(os.getpid()) + ' pilot ' + self.pilot_id + ': done    : ' + item 
 
                           # job is done, files are staged out, bye bye
                           exit (0)
 
 
 
+################################################################################
 class job :
 
-    def __init__ (self, pilot, job_id) :
+    def __init__ (self, job_id) :
 
-        self.pilot    = pilot
-        self.job_id   = job_id
+        self.job_id = job_id
+        [self.master_idx, self.pilot_idx, self.job_idx] = parse_job_id (self.job_id)
+
         self.canceled = False
+        self.pilot = pilot (create_pilot_id (self.master_idx, self.pilot_idx))
+
+        cmd = cat (self.pilot.get_base () + "/spool", self.job_idx)
+
+        # create description from command
+        words = cmd.split ()
+
+        if len(words) >= 1 :
+            exe = words[0]
+        if len(words) >= 2 :
+            args = words[1:]
+
+
+        self.description = {'executable' : exe,
+                            'arguments'  : args }
 
 
     def kill (self) :
@@ -474,12 +575,26 @@ class job :
 
 
     def get_state (self) :
+        print "peejay " + str(os.getpid()) + " getting job state"
         if self.canceled : return state.Canceled
         return self.pilot.job_get_state (self.job_id)
         
 
     def get_id (self) :
         return self.job_id
+
+
+    def get_pilot_id (self) :
+        return self.pilot.get_id ()
+
+
+    def get_master_id (self) :
+        p = pilot (self.get_pilot_id ())
+        return p.get_master_id ()
+
+
+    def get_description (self) :
+        return self.description
 
 
     def wait (self) :
@@ -489,7 +604,7 @@ class job :
               s != state.Failed   and \
               s != state.Canceled : 
 
-            print str(os.getpid()) + " wait for job " + str(self.job_id) + " : " +  str(s)
+            print "peejay " + str(os.getpid()) + " wait for job " + str(self.job_id) + " : " +  str(s)
             sleep (1)
             s = self.get_state () 
 
